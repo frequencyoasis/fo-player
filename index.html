@@ -11,7 +11,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="FO">
 
-<link rel="apple-touch-icon" href="fo-icon-192.png">
+<link rel="apple-touch-icon" href="fo-icon-192-v2.png">
+<link rel="icon" type="image/png" sizes="192x192" href="fo-icon-192-v2.png">
 <link rel="icon" type="image/png" sizes="512x512" href="fo-icon-512.png">
 <link rel="manifest" href="manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -48,9 +49,12 @@
     color: var(--text);
     font-family: 'Space Mono', monospace;
     min-height: 100vh;
+    min-height: 100dvh;
     display: flex;
     flex-direction: column;
     overflow-x: hidden;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: none;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -76,7 +80,7 @@
   /* ── HEADER ─────────────────────────────────────────────────── */
   header {
     width: 100%;
-    padding: 18px 24px;
+    padding: calc(18px + env(safe-area-inset-top)) calc(24px + env(safe-area-inset-right)) 18px calc(24px + env(safe-area-inset-left));
     display: flex;
     align-items: center;
     gap: 16px;
@@ -243,6 +247,7 @@
     position: relative;
     height: 34px;
     cursor: pointer;
+    touch-action: none;   /* let us scrub with a finger instead of the browser panning */
   }
   .tl-track {
     position: absolute; left: 0; right: 0; top: 15px; height: 4px;
@@ -272,7 +277,7 @@
     border: 1px solid var(--line); padding: 2px 6px; white-space: nowrap;
     display: none; pointer-events: none;
   }
-  .timeline:hover .tl-hover-time { display: block; }
+  .timeline:hover .tl-hover-time, .timeline.scrubbing .tl-hover-time { display: block; }
   .tl-marker {
     position: absolute; top: 4px; width: 6px; height: 6px;
     background: var(--gold); transform: translateX(-50%) rotate(45deg);
@@ -358,7 +363,7 @@
   .ptab.active { color: var(--gold); border-color: var(--gold); }
 
   .panel-body {
-    flex: 1; overflow-y: auto; min-height: 260px; max-height: calc(100vh - 260px);
+    flex: 1; overflow-y: auto; min-height: 260px; max-height: calc(100vh - 260px); max-height: calc(100dvh - 260px);
   }
   .panel-body::-webkit-scrollbar { width: 3px; }
   .panel-body::-webkit-scrollbar-track { background: var(--surface); }
@@ -527,7 +532,8 @@
   /* mobile bottom sheet */
   @media (max-width: 900px) {
     .panel { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
-      max-height: 72vh; transform: translateY(calc(100% - 46px));
+      max-height: 72vh; max-height: 72dvh; padding-bottom: env(safe-area-inset-bottom);
+      transform: translateY(calc(100% - 46px - env(safe-area-inset-bottom)));
       transition: transform .3s var(--ease);
       border-top: 1px solid var(--line); box-shadow: 0 -20px 40px rgba(0,0,0,.6);
     }
@@ -537,13 +543,35 @@
     }
     .panel-drag::before { content:''; width: 32px; height: 3px; background: var(--line); }
     .panel-body { max-height: 55vh; }
-    .app { padding-bottom: 46px; }
+    .app { padding-bottom: calc(46px + env(safe-area-inset-bottom)); }
+    .viewport-frame { padding: 14px calc(12px + env(safe-area-inset-right)) 0 calc(12px + env(safe-area-inset-left)); }
+    .timeline-block { padding-left: calc(14px + env(safe-area-inset-left)); padding-right: calc(14px + env(safe-area-inset-right)); }
+    .toast { bottom: calc(60px + env(safe-area-inset-bottom)); }
+    .install-fab { bottom: calc(60px + env(safe-area-inset-bottom)) !important; right: calc(12px + env(safe-area-inset-right)) !important; }
     .head-file { max-width: 40vw; }
     .controls { gap: 6px; }
     .btn { padding: 8px 10px; font-size: .62rem; }
   }
   .panel-drag { display: none; }
   @media (max-width: 900px) { .panel-drag { display: flex; } }
+
+  /* phones: compact header, touch-friendly targets, no keyboard-shortcut hint */
+  @media (max-width: 600px) {
+    header { padding: calc(10px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) 10px calc(14px + env(safe-area-inset-left)); gap: 10px; }
+    .logo { font-size: 1.15rem; white-space: nowrap; }
+    .logo .sub { display: none; }
+    .head-file { max-width: 45vw; }
+    .btn { min-height: 40px; }
+  }
+  @media (pointer: coarse) { .hint-row { display: none; } .timeline { height: 40px; } .tl-track { top: 18px; } }
+
+  /* landscape phones: keep the video + controls on one screen instead of a 16:9 wall */
+  @media (max-height: 480px) and (max-width: 950px) {
+    header { padding-top: calc(6px + env(safe-area-inset-top)); padding-bottom: 6px; }
+    .logo { font-size: 1.05rem; } .logo .sub { display: none; }
+    .viewport-frame { padding-top: 8px; }
+    .viewport { width: min(100%, calc((100dvh - 150px) * 16 / 9)); margin: 0 auto; }
+  }
 </style>
 </head>
 <body>
@@ -1127,12 +1155,25 @@
     curTimeBig.textContent = '0:00.000'; durTimeBig.textContent = '0:00.000';
   }
 
-  timeline.addEventListener('click', e => {
+  // tap or drag (mouse / touch / pen) to seek
+  let scrubbing = false;
+  function scrubTo(e) {
     if (!vid.duration) return;
     const rect = timeline.getBoundingClientRect();
     const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
     vid.currentTime = ratio * vid.duration;
+    tlHoverTime.style.left = (ratio * 100) + '%';
+    tlHoverTime.textContent = fmt(ratio * vid.duration);
+  }
+  timeline.addEventListener('pointerdown', e => {
+    scrubbing = true; timeline.classList.add('scrubbing');
+    try { timeline.setPointerCapture(e.pointerId); } catch (_) {}
+    scrubTo(e);
   });
+  timeline.addEventListener('pointermove', e => { if (scrubbing) scrubTo(e); });
+  const endScrub = () => { scrubbing = false; timeline.classList.remove('scrubbing'); };
+  timeline.addEventListener('pointerup', endScrub);
+  timeline.addEventListener('pointercancel', endScrub);
   timeline.addEventListener('mousemove', e => {
     if (!vid.duration) return;
     const rect = timeline.getBoundingClientRect();
@@ -1711,7 +1752,7 @@
   // ═══════════════════════════════════════════════════════════════
   let deferredPrompt;
   const installBtn = document.createElement('button');
-  installBtn.className = 'btn';
+  installBtn.className = 'btn install-fab';
   installBtn.textContent = '⬇ Install App';
   installBtn.style.cssText = 'display:none;position:fixed;bottom:16px;right:16px;z-index:1000;background:#c9a24a;color:#050403;border:none;padding:10px 18px;font-family:Space Mono,monospace;font-size:.7rem;letter-spacing:.1em;cursor:pointer';
   document.body.appendChild(installBtn);
